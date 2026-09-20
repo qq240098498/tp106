@@ -107,6 +107,19 @@ app.post('/api/scan', (req, res) => {
   }
 });
 
+// 历史轮次：每一轮扫描都落了盘，改编码之后也能按沿革落回同一条规则
+app.get('/api/scans', (_req, res) => {
+  res.json(api.listScans());
+});
+
+app.get('/api/scans/:id', (req, res) => {
+  try {
+    res.json(api.getScan(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 // 未匹配到的接口路径统一返回说明，避免前端拿到一串页面内容
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: { code: 'API_NOT_FOUND', message: '接口不存在', field: '' } });

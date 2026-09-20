@@ -30,7 +30,7 @@
           <select id="rule-filter-level"><option value="">全部级别</option></select>
           <select id="rule-filter-status"><option value="">全部状态</option></select>
           <select id="rule-filter-type"><option value="">全部适用文件类型</option></select>
-          <input id="rule-filter-keyword" placeholder="搜索编码、名称、匹配写法" maxlength="40">
+          <input id="rule-filter-keyword" placeholder="搜索编码、旧编码、名称、匹配写法" maxlength="40">
           <button type="button" id="rule-filter-apply">筛选</button>
           <button type="button" id="rule-filter-reset" class="ghost">重置</button>
           <button type="button" id="rule-refresh" class="ghost">刷新</button>
@@ -56,6 +56,7 @@
         </table>
       </div>
       <p class="empty-tip hidden" id="rule-empty">当前筛选条件下没有规则</p>
+      <pre class="content-preview hidden" id="rule-history"></pre>
 
       <form class="entry-form hidden" id="rule-form" autocomplete="off">
         <h3 id="rule-form-title">新建规则</h3>
@@ -134,6 +135,7 @@
           <select id="scan-file"><option value="">全部文件</option></select>
           <select id="scan-level"><option value="">全部级别</option></select>
           <button type="button" id="scan-run">按规则扫一遍</button>
+          <select id="scan-history"><option value="">实时扫描</option></select>
         </div>
       </div>
       <p class="scan-meta" id="scan-meta">还没有扫过，点右上角扫一遍</p>
@@ -146,6 +148,7 @@
               <th>规则编码</th>
               <th>级别</th>
               <th>规则名称</th>
+              <th class="hidden" id="hit-th-current">当前对应</th>
               <th>文件</th>
               <th>行号</th>
               <th>那一行的内容</th>

@@ -254,6 +254,26 @@ td.note-cell {
   color: var(--ink-soft);
 }
 
+.alias-line {
+  margin-top: 2px;
+  color: var(--ink-soft);
+  font-family: inherit;
+  font-size: 11px;
+  white-space: normal;
+}
+
+.muted {
+  color: var(--ink-soft);
+}
+
+.changed {
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--warn-bg);
+  color: #8a5a00;
+  font-weight: 600;
+}
+
 td.actions {
   white-space: nowrap;
 }

@@ -14,16 +14,22 @@ const MAX_PATTERN_LENGTH = 60;
 const MAX_NOTE_LENGTH = 200;
 const MAX_PATH_LENGTH = 120;
 const MAX_CONTENT_LENGTH = 4000;
+// 扫描轮次全部留在数据文件里，但只保留最近这些轮，避免文件越攒越大
+const MAX_SCAN_RUNS = 100;
 
 // 检查规则的初始数据。十二条规则里有两条是停用的，
-// 有一条启用的规则在现有文件里一条命中都没有，用来观察从未命中的规则
+// 有一条启用的规则在现有文件里一条命中都没有，用来观察从未命中的规则；
+// CODE-004 自带两段编码沿革，用来观察旧编码别名怎么落到同一条规则上
 function seedRules() {
   const at = '2026-09-02T02:00:00.000Z';
   return [
     { id: 'rule-1001', code: 'CODE-001', name: '禁止提交调试输出', level: '警告', status: '启用', fileType: 'js', pattern: 'console.log', note: '上线前要换成统一日志', createdAt: at, updatedAt: at },
     { id: 'rule-1002', code: 'CODE-002', name: '变量声明统一用 let 或 const', level: '错误', status: '启用', fileType: 'js', pattern: 'var ', note: '老代码里还有不少', createdAt: at, updatedAt: at },
     { id: 'rule-1003', code: 'CODE-003', name: '待办事项需要收口', level: '提示', status: '启用', fileType: '全部', pattern: 'TODO', note: '带人名与期限的可以留', createdAt: at, updatedAt: at },
-    { id: 'rule-1004', code: 'CODE-004', name: '禁止动态执行代码', level: '错误', status: '启用', fileType: '全部', pattern: 'eval(', note: '', createdAt: at, updatedAt: at },
+    { id: 'rule-1004', code: 'CODE-004', name: '禁止动态执行代码', level: '错误', status: '启用', fileType: '全部', pattern: 'eval(', note: '', codeHistory: [
+      { from: 'LINT-004', to: 'SAFE-004', changedAt: '2026-09-05T02:00:00.000Z' },
+      { from: 'SAFE-004', to: 'CODE-004', changedAt: '2026-09-12T02:00:00.000Z' },
+    ], createdAt: at, updatedAt: at },
     { id: 'rule-1005', code: 'CODE-005', name: '禁止把口令写进代码', level: '错误', status: '启用', fileType: '全部', pattern: 'password =', note: '口令一律走统一配置', createdAt: at, updatedAt: at },
     { id: 'rule-1006', code: 'CODE-006', name: '空捕获块要写清原因', level: '警告', status: '启用', fileType: 'js', pattern: 'catch (e) {}', note: '', createdAt: at, updatedAt: at },
     { id: 'rule-1007', code: 'CODE-007', name: '调试开关上线前要关掉', level: '警告', status: '停用', fileType: 'js', pattern: 'DEBUG = true', note: '等联调结束再打开', createdAt: at, updatedAt: at },
@@ -295,6 +301,24 @@ function seedFiles() {
   ];
 }
 
+// 把编码沿革整理成固定结构：每一次改动记一条 { from, to, changedAt }，
+// 缺胳膊少腿的、改前改后一样的条目一律丢掉
+function normalizeCodeHistory(list) {
+  if (!Array.isArray(list)) return [];
+  const history = [];
+  list.forEach((item) => {
+    const source = item && typeof item === 'object' ? item : {};
+    const from = typeof source.from === 'string' ? source.from.trim() : '';
+    const to = typeof source.to === 'string' ? source.to.trim() : '';
+    if (!from || !to || from.toLowerCase() === to.toLowerCase()) return;
+    const changedAt = typeof source.changedAt === 'string' && source.changedAt
+      ? source.changedAt
+      : new Date().toISOString();
+    history.push({ from, to, changedAt });
+  });
+  return history;
+}
+
 // 把单条规则整理成固定结构，级别与状态不认识的一律回到默认值
 function normalizeRule(item, fallbackIndex) {
   const source = item && typeof item === 'object' ? item : {};
@@ -311,6 +335,7 @@ function normalizeRule(item, fallbackIndex) {
     fileType,
     pattern: typeof source.pattern === 'string' ? source.pattern : '',
     note: typeof source.note === 'string' ? source.note : '',
+    codeHistory: normalizeCodeHistory(source.codeHistory),
     createdAt,
     updatedAt: typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : createdAt,
   };
@@ -335,7 +360,57 @@ function normalizeFile(item, fallbackIndex) {
   };
 }
 
-// 整份数据保证规则与文件结构一致，缺编号、缺名称、缺路径的条目一律丢掉
+// 历史轮次里的一条命中：编码记的是扫描当时那一版，之后规则改编码也不回写
+function normalizeScanHit(hit) {
+  const source = hit && typeof hit === 'object' ? hit : {};
+  const code = typeof source.code === 'string' ? source.code.trim() : '';
+  const filePath = typeof source.path === 'string' ? source.path.trim() : '';
+  if (!code || !filePath) return null;
+  return {
+    ruleId: typeof source.ruleId === 'string' ? source.ruleId : '',
+    code,
+    ruleName: typeof source.ruleName === 'string' ? source.ruleName : '',
+    level: LEVELS.includes(source.level) ? source.level : LEVELS[0],
+    pattern: typeof source.pattern === 'string' ? source.pattern : '',
+    fileId: typeof source.fileId === 'string' ? source.fileId : '',
+    path: filePath,
+    fileType: typeof source.fileType === 'string' ? source.fileType : '',
+    lineNo: Number.isInteger(source.lineNo) && source.lineNo > 0 ? source.lineNo : 0,
+    lineText: typeof source.lineText === 'string' ? source.lineText : '',
+  };
+}
+
+function normalizeCount(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+// 把一轮扫描整理成固定结构：什么时候扫的、用了几条规则、范围里几个文件、命中清单与汇总
+function normalizeScan(item, fallbackIndex) {
+  const source = item && typeof item === 'object' ? item : {};
+  const scannedAt = typeof source.scannedAt === 'string' && source.scannedAt ? source.scannedAt : '';
+  if (!scannedAt) return null;
+  const hits = Array.isArray(source.hits) ? source.hits.map(normalizeScanHit).filter(Boolean) : [];
+  const summary = source.summary && typeof source.summary === 'object' ? source.summary : {};
+  return {
+    id: typeof source.id === 'string' && source.id ? source.id : `scan-restored-${fallbackIndex + 1}`,
+    scannedAt,
+    enabledRules: normalizeCount(source.enabledRules),
+    rulesUsed: normalizeCount(source.rulesUsed),
+    filesInScope: normalizeCount(source.filesInScope),
+    filesTotal: normalizeCount(source.filesTotal),
+    rulesTotal: normalizeCount(source.rulesTotal),
+    warning: typeof source.warning === 'string' ? source.warning : '',
+    hits,
+    summary: {
+      total: normalizeCount(summary.total) || hits.length,
+      byLevel: summary.byLevel && typeof summary.byLevel === 'object' ? summary.byLevel : {},
+      byRule: Array.isArray(summary.byRule) ? summary.byRule : [],
+      byFile: Array.isArray(summary.byFile) ? summary.byFile : [],
+    },
+  };
+}
+
+// 整份数据保证规则、文件与扫描轮次结构一致，缺编号、缺名称、缺路径的条目一律丢掉
 function normalize(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const seed = { rules: seedRules(), files: seedFiles() };
@@ -368,7 +443,17 @@ function normalize(raw) {
     files.push(file);
   });
 
-  return { rules, files };
+  const rawScans = Array.isArray(source.scans) ? source.scans : [];
+  const seenScanIds = new Set();
+  const scans = [];
+  rawScans.forEach((item, index) => {
+    const run = normalizeScan(item, index);
+    if (!run || seenScanIds.has(run.id)) return;
+    seenScanIds.add(run.id);
+    scans.push(run);
+  });
+
+  return { rules, files, scans: scans.slice(-MAX_SCAN_RUNS) };
 }
 
 // 读取数据文件：文件缺失或内容损坏时回落到初始数据并立刻补写
@@ -377,7 +462,7 @@ function load() {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     return normalize(JSON.parse(raw));
   } catch (err) {
-    const data = { rules: seedRules(), files: seedFiles() };
+    const data = { rules: seedRules(), files: seedFiles(), scans: [] };
     save(data);
     return data;
   }
@@ -408,5 +493,6 @@ module.exports = {
   MAX_NOTE_LENGTH,
   MAX_PATH_LENGTH,
   MAX_CONTENT_LENGTH,
+  MAX_SCAN_RUNS,
   DATA_FILE,
 };

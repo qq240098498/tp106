@@ -3,6 +3,7 @@
 const state = {
   rules: [],
   files: [],
+  scans: [],
   levels: [],
   statuses: [],
   fileTypes: [],
@@ -11,7 +12,9 @@ const state = {
   ruleFileTypes: [],
   editingRuleId: '',
   editingFileId: '',
+  historyRuleId: '',
   lastScan: null,
+  viewingScanId: '',
 };
 
 const el = (id) => document.getElementById(id);
@@ -212,8 +215,13 @@ function renderScanFileOptions() {
 
 function renderRules() {
   const body = el('rule-body');
-  body.innerHTML = state.rules.map((item) => `<tr>
-      <td class="mono">${escapeHtml(item.code)}</td>
+  body.innerHTML = state.rules.map((item) => {
+    const aliases = Array.isArray(item.aliases) ? item.aliases : [];
+    const aliasLine = aliases.length
+      ? `<div class="alias-line">旧编码：${escapeHtml(aliases.join('、'))}</div>`
+      : '';
+    return `<tr>
+      <td class="mono">${escapeHtml(item.code)}${aliasLine}</td>
       <td>${escapeHtml(item.name)}</td>
       <td><span class="tag ${levelClass(item.level)}">${escapeHtml(item.level)}</span></td>
       <td>${escapeHtml(item.status)}</td>
@@ -222,11 +230,15 @@ function renderRules() {
       <td class="note-cell">${escapeHtml(item.note)}</td>
       <td class="mono">${escapeHtml(formatTime(item.updatedAt))}</td>
       <td class="actions">
+        <button type="button" class="link" data-rule-history="${escapeHtml(item.id)}">沿革</button>
         <button type="button" class="link" data-rule-edit="${escapeHtml(item.id)}">编辑</button>
         <button type="button" class="link danger" data-rule-delete="${escapeHtml(item.id)}">删除</button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   el('rule-empty').classList.toggle('hidden', state.rules.length > 0);
+  // 沿革面板开着的话跟着清单一起刷新，规则被筛出去或删掉就收起
+  if (state.historyRuleId) renderRuleHistory();
 }
 
 function renderFiles() {
@@ -294,6 +306,39 @@ async function showFileContent(id) {
   }
 }
 
+// 编码沿革：改过几次、每次从什么改成什么、什么时候改的，都列清楚
+function renderRuleHistory() {
+  const box = el('rule-history');
+  const rule = state.rules.find((item) => item.id === state.historyRuleId);
+  if (!rule) {
+    state.historyRuleId = '';
+    box.classList.add('hidden');
+    box.textContent = '';
+    return;
+  }
+  const history = Array.isArray(rule.codeHistory) ? rule.codeHistory : [];
+  const aliases = Array.isArray(rule.aliases) ? rule.aliases : [];
+  const lines = [`${rule.code} ${rule.name} 的编码沿革`, '─'.repeat(40)];
+  if (!history.length) {
+    lines.push(`这条规则的编码没有改过，当前编码：${rule.code}`);
+  } else {
+    lines.push(`当前编码：${rule.code}`);
+    lines.push(`旧编码（按这些编码也能搜到这条规则）：${aliases.join('、')}`);
+    lines.push(`一共改过 ${history.length} 次：`);
+    history.forEach((entry, index) => {
+      lines.push(`  ${index + 1}. ${formatTime(entry.changedAt)}　${entry.from} → ${entry.to}`);
+    });
+  }
+  box.textContent = lines.join('\n');
+  box.classList.remove('hidden');
+}
+
+function showRuleHistory(id) {
+  clearNotice();
+  state.historyRuleId = state.historyRuleId === id ? '' : id;
+  renderRuleHistory();
+}
+
 async function submitRule(event) {
   event.preventDefault();
   clearNotice();
@@ -350,7 +395,7 @@ async function submitFile(event) {
   }
 }
 
-// 扫一遍，把概要与命中清单都画出来
+// 扫一遍，把概要与命中清单都画出来；每一轮都会落盘成历史记录
 async function runScan() {
   clearNotice();
   const body = {
@@ -361,14 +406,63 @@ async function runScan() {
   try {
     const result = await request('/api/scan', { method: 'POST', body: JSON.stringify(body) });
     state.lastScan = result;
-    renderScan(result);
+    state.viewingScanId = '';
+    renderScan(result, false);
+    await loadScans();
   } catch (err) {
     notify(err.message, 'error');
   }
 }
 
-function renderScan(result) {
-  el('scan-meta').textContent = `扫描时刻 ${formatTime(result.scannedAt)}　参与比对的规则 ${result.rulesUsed} 条（启用共 ${result.enabledRules} 条）　范围里的文件 ${result.filesInScope} 个（清单共 ${result.filesTotal} 个）`;
+async function loadScans() {
+  const payload = await request('/api/scans');
+  state.scans = payload.scans || [];
+  renderScanHistoryOptions();
+}
+
+function renderScanHistoryOptions() {
+  const select = el('scan-history');
+  select.innerHTML = '<option value="">实时扫描</option>'
+    + state.scans.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(formatTime(item.scannedAt))} 那一轮（命中 ${item.total} 条）</option>`).join('');
+  if (state.viewingScanId && state.scans.some((item) => item.id === state.viewingScanId)) {
+    select.value = state.viewingScanId;
+  } else {
+    state.viewingScanId = '';
+    select.value = '';
+  }
+}
+
+// 看历史轮次：命中里带的是当时那一版的编码，页面上同时给出现在对应的规则
+async function viewScan(id) {
+  clearNotice();
+  if (!id) {
+    state.viewingScanId = '';
+    if (state.lastScan) {
+      renderScan(state.lastScan, false);
+    } else {
+      el('scan-meta').textContent = '还没有扫过，点右上角扫一遍';
+      el('scan-summary').classList.add('hidden');
+      el('scan-warning').classList.add('hidden');
+      el('hit-body').innerHTML = '';
+      el('hit-empty').classList.add('hidden');
+      el('hit-th-current').classList.add('hidden');
+    }
+    return;
+  }
+  try {
+    const result = await request(`/api/scans/${encodeURIComponent(id)}`);
+    state.viewingScanId = id;
+    renderScan(result, true);
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+function renderScan(result, isHistory) {
+  const when = formatTime(result.scannedAt);
+  el('scan-meta').textContent = isHistory
+    ? `正在看 ${when} 那一轮的命中（历史记录）　参与比对的规则 ${result.rulesUsed} 条　范围里的文件 ${result.filesInScope} 个`
+    : `扫描时刻 ${when}　参与比对的规则 ${result.rulesUsed} 条（启用共 ${result.enabledRules} 条）　范围里的文件 ${result.filesInScope} 个（清单共 ${result.filesTotal} 个）`;
 
   const warningBox = el('scan-warning');
   if (result.warning) {
@@ -395,15 +489,30 @@ function renderScan(result) {
     <div class="summary-line">按文件：${escapeHtml(fileText)}</div>`;
   summaryBox.classList.remove('hidden');
 
+  // 历史模式多一列"当前对应"：当时的编码照原样显示，旁边给出它现在落到哪条规则上
+  el('hit-th-current').classList.toggle('hidden', !isHistory);
   const body = el('hit-body');
-  body.innerHTML = result.hits.map((hit) => `<tr>
+  body.innerHTML = result.hits.map((hit) => {
+    let currentCell = '';
+    if (isHistory) {
+      if (hit.ruleGone) {
+        currentCell = '<td><span class="tag lv-error">规则已删除</span></td>';
+      } else if (hit.codeChanged) {
+        currentCell = `<td class="mono"><span class="changed">${escapeHtml(hit.currentCode)}</span> ${escapeHtml(hit.currentRuleName)}</td>`;
+      } else {
+        currentCell = `<td class="mono muted">${escapeHtml(hit.currentCode)} ${escapeHtml(hit.currentRuleName)}</td>`;
+      }
+    }
+    return `<tr>
       <td class="mono">${escapeHtml(hit.code)}</td>
       <td><span class="tag ${levelClass(hit.level)}">${escapeHtml(hit.level)}</span></td>
       <td>${escapeHtml(hit.ruleName)}</td>
+      ${currentCell}
       <td class="mono">${escapeHtml(hit.path)}</td>
       <td class="mono">${hit.lineNo}</td>
       <td class="mono line-cell">${escapeHtml(hit.lineText)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   el('hit-empty').classList.toggle('hidden', result.hits.length > 0);
 }
 
@@ -416,6 +525,11 @@ document.addEventListener('click', async (event) => {
     clearNotice();
     const found = state.rules.find((item) => item.id === node.dataset.ruleEdit);
     if (found) openRuleForm(found);
+    return;
+  }
+
+  if (node.dataset.ruleHistory) {
+    showRuleHistory(node.dataset.ruleHistory);
     return;
   }
 
@@ -505,6 +619,9 @@ el('file-filter-reset').addEventListener('click', () => {
   loadFiles().catch((err) => notify(err.message, 'error'));
 });
 el('scan-run').addEventListener('click', runScan);
+el('scan-history').addEventListener('change', () => {
+  viewScan(el('scan-history').value).catch((err) => notify(err.message, 'error'));
+});
 el('rule-filter-level').addEventListener('change', () => {
   loadRules().catch((err) => notify(err.message, 'error'));
 });
@@ -515,9 +632,10 @@ el('operator').addEventListener('change', () => {
   window.localStorage.setItem(OPERATOR_KEY, currentOperator());
 });
 
-// 页面打开时先把规则与文件都拉一遍，扫描的范围下拉依赖这两份清单
+// 页面打开时先把规则、文件与历史轮次都拉一遍，扫描的范围下拉与历史下拉依赖这几份清单
 restoreOperator();
 loadHealth();
 loadRules()
   .then(loadFiles)
+  .then(loadScans)
   .catch((err) => notify(err.message, 'error'));
