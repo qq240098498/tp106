@@ -22,7 +22,10 @@ function seedRules() {
   return [
     { id: 'rule-1001', code: 'CODE-001', name: '禁止提交调试输出', level: '警告', status: '启用', fileType: 'js', pattern: 'console.log', note: '上线前要换成统一日志', createdAt: at, updatedAt: at },
     { id: 'rule-1002', code: 'CODE-002', name: '变量声明统一用 let 或 const', level: '错误', status: '启用', fileType: 'js', pattern: 'var ', note: '老代码里还有不少', createdAt: at, updatedAt: at },
-    { id: 'rule-1003', code: 'CODE-003', name: '待办事项需要收口', level: '提示', status: '启用', fileType: '全部', pattern: 'TODO', note: '带人名与期限的可以留', createdAt: at, updatedAt: at },
+    { id: 'rule-1003', code: 'CODE-003', name: '待办事项需要收口', level: '提示', status: '启用', fileType: '全部', pattern: 'TODO', note: '带人名与期限的可以留', codeHistory: [
+      { from: 'CHK-003', to: 'CODE-103', at: '2026-09-05T08:30:00.000Z' },
+      { from: 'CODE-103', to: 'CODE-003', at: '2026-09-12T09:00:00.000Z' },
+    ], createdAt: at, updatedAt: '2026-09-12T09:00:00.000Z' },
     { id: 'rule-1004', code: 'CODE-004', name: '禁止动态执行代码', level: '错误', status: '启用', fileType: '全部', pattern: 'eval(', note: '', createdAt: at, updatedAt: at },
     { id: 'rule-1005', code: 'CODE-005', name: '禁止把口令写进代码', level: '错误', status: '启用', fileType: '全部', pattern: 'password =', note: '口令一律走统一配置', createdAt: at, updatedAt: at },
     { id: 'rule-1006', code: 'CODE-006', name: '空捕获块要写清原因', level: '警告', status: '启用', fileType: 'js', pattern: 'catch (e) {}', note: '', createdAt: at, updatedAt: at },
@@ -295,6 +298,46 @@ function seedFiles() {
   ];
 }
 
+// 编码沿革的每一条：一次改名记一条 { from, to, at }，旧编码据此一直能找回这条规则
+function normalizeCodeHistory(rawHistory) {
+  if (!Array.isArray(rawHistory)) return [];
+  const history = [];
+  rawHistory.forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    const from = typeof item.from === 'string' ? item.from.trim() : '';
+    const to = typeof item.to === 'string' ? item.to.trim() : '';
+    const at = typeof item.at === 'string' && item.at ? item.at.trim() : '';
+    if (!from || !to || !at || from.toLowerCase() === to.toLowerCase()) return;
+    history.push({ from, to, at });
+  });
+  return history;
+}
+
+// 这条规则过去用过、现在已经不用的编码（不含当前编码）
+function previousCodesOf(rule) {
+  const source = rule && typeof rule === 'object' && Array.isArray(rule.codeHistory) ? rule.codeHistory : [];
+  const current = rule && typeof rule.code === 'string' ? rule.code.toLowerCase() : '';
+  const codes = [];
+  source.forEach((item) => {
+    if (!codes.includes(item.from) && item.from.toLowerCase() !== current) codes.push(item.from);
+  });
+  return codes;
+}
+
+// 这条规则占用过的全部编码：当前编码加上沿革里出现过的每一个编码，
+// 用来保证别的规则既不能拿当前编码、也不能拿曾用编码做正文
+function claimedCodesOf(rule) {
+  const set = new Set();
+  if (rule && typeof rule.code === 'string' && rule.code) set.add(rule.code.toLowerCase());
+  if (rule && Array.isArray(rule.codeHistory)) {
+    rule.codeHistory.forEach((item) => {
+      set.add(item.from.toLowerCase());
+      set.add(item.to.toLowerCase());
+    });
+  }
+  return set;
+}
+
 // 把单条规则整理成固定结构，级别与状态不认识的一律回到默认值
 function normalizeRule(item, fallbackIndex) {
   const source = item && typeof item === 'object' ? item : {};
@@ -311,6 +354,7 @@ function normalizeRule(item, fallbackIndex) {
     fileType,
     pattern: typeof source.pattern === 'string' ? source.pattern : '',
     note: typeof source.note === 'string' ? source.note : '',
+    codeHistory: normalizeCodeHistory(source.codeHistory),
     createdAt,
     updatedAt: typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : createdAt,
   };
@@ -342,15 +386,18 @@ function normalize(raw) {
 
   const rawRules = Array.isArray(source.rules) ? source.rules : seed.rules;
   const seenRuleIds = new Set();
-  const seenCodes = new Set();
+  // 占用台账：每个编码（不管现在用还是过去用）只能属于一条规则，
+  // 后来的规则只要碰到已登记的编码就整条丢掉，防止别名指到两条规则上
+  const claimedOwners = new Map();
   const rules = [];
   rawRules.forEach((item, index) => {
     const rule = normalizeRule(item, index);
     if (!rule.id || !rule.code || !rule.name || !rule.pattern) return;
-    const lower = rule.code.toLowerCase();
-    if (seenRuleIds.has(rule.id) || seenCodes.has(lower)) return;
+    if (seenRuleIds.has(rule.id)) return;
+    const claimed = Array.from(claimedCodesOf(rule));
+    if (claimed.some((code) => claimedOwners.has(code))) return;
     seenRuleIds.add(rule.id);
-    seenCodes.add(lower);
+    claimed.forEach((code) => claimedOwners.set(code, rule.id));
     rules.push(rule);
   });
 
@@ -399,6 +446,9 @@ module.exports = {
   normalize,
   normalizeRule,
   normalizeFile,
+  normalizeCodeHistory,
+  previousCodesOf,
+  claimedCodesOf,
   LEVELS,
   STATUSES,
   FILE_TYPES,

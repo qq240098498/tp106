@@ -88,6 +88,29 @@ function levelClass(level) {
   return 'lv-hint';
 }
 
+// 从规则的编码沿革里取出过去用过、现在已不用的编码，保持改动先后顺序
+function previousCodesOfRule(rule) {
+  if (!rule || !Array.isArray(rule.codeHistory)) return [];
+  const current = (rule.code || '').toLowerCase();
+  const codes = [];
+  rule.codeHistory.forEach((item) => {
+    if (item && item.from && !codes.includes(item.from) && item.from.toLowerCase() !== current) {
+      codes.push(item.from);
+    }
+  });
+  return codes;
+}
+
+// 编码单元格：当前编码在上面，沿革里的旧编码按改动先后列在下面，
+// 让人一眼看出新旧对应关系；旧编码只作展示，不再参与比对
+function renderCodeCell(code, previousCodes) {
+  const olds = Array.isArray(previousCodes) ? previousCodes : [];
+  const oldLine = olds.length
+    ? `<div class="code-old">曾用 ${olds.map((item) => escapeHtml(item)).join('、')}</div>`
+    : '';
+  return `<span class="code-current">${escapeHtml(code)}</span>${oldLine}`;
+}
+
 const OPERATOR_KEY = 'check-hits-operator';
 
 function currentOperator() {
@@ -198,7 +221,11 @@ function renderScanRuleOptions() {
   const select = el('scan-rule');
   const current = select.value;
   select.innerHTML = '<option value="">全部规则</option>'
-    + state.rules.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.code)} ${escapeHtml(item.name)}</option>`).join('');
+    + state.rules.map((item) => {
+      const olds = previousCodesOfRule(item);
+      const tail = olds.length ? `（曾用 ${olds.join('、')}）` : '';
+      return `<option value="${escapeHtml(item.id)}">${escapeHtml(item.code)} ${escapeHtml(item.name)}${escapeHtml(tail)}</option>`;
+    }).join('');
   if (state.rules.some((item) => item.id === current)) select.value = current;
 }
 
@@ -213,7 +240,7 @@ function renderScanFileOptions() {
 function renderRules() {
   const body = el('rule-body');
   body.innerHTML = state.rules.map((item) => `<tr>
-      <td class="mono">${escapeHtml(item.code)}</td>
+      <td class="mono code-cell">${renderCodeCell(item.code, previousCodesOfRule(item))}</td>
       <td>${escapeHtml(item.name)}</td>
       <td><span class="tag ${levelClass(item.level)}">${escapeHtml(item.level)}</span></td>
       <td>${escapeHtml(item.status)}</td>
@@ -246,9 +273,27 @@ function renderFiles() {
   el('file-empty').classList.toggle('hidden', state.files.length > 0);
 }
 
+function renderCodeHistoryBox(rule) {
+  const box = el('rule-code-history');
+  if (!rule || !Array.isArray(rule.codeHistory) || rule.codeHistory.length === 0) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  const rows = rule.codeHistory.map((item, index) => `<li>
+      <span class="mono">${escapeHtml(item.from)} → ${escapeHtml(item.to)}</span>
+      <span class="code-history-at">第 ${index + 1} 次改动 · ${escapeHtml(formatTime(item.at))}</span>
+    </li>`).join('');
+  box.innerHTML = `<div class="code-history-title">编码沿革（共改过 ${rule.codeHistory.length} 次，旧编码保留为别名，仍可搜索与引用）</div>
+    <ul class="code-history-list">${rows}</ul>
+    <div class="code-history-now">当前编码：<span class="mono">${escapeHtml(rule.code)}</span></div>`;
+  box.classList.remove('hidden');
+}
+
 function openRuleForm(rule) {
   state.editingRuleId = rule ? rule.id : '';
   el('rule-form-title').textContent = rule ? `编辑规则：${rule.code}` : '新建规则';
+  renderCodeHistoryBox(rule || null);
   el('rule-code').value = rule ? rule.code : '';
   el('rule-name').value = rule ? rule.name : '';
   el('rule-level').value = rule ? rule.level : (state.levels[0] || '提示');
@@ -310,8 +355,14 @@ async function submitRule(event) {
   const editing = state.editingRuleId;
   try {
     if (editing) {
-      await request(`/api/rules/${encodeURIComponent(editing)}`, { method: 'PATCH', body: JSON.stringify(payload) });
-      notify('规则已保存', 'ok');
+      const before = state.rules.find((item) => item.id === editing);
+      const oldCode = before ? before.code : '';
+      const updated = await request(`/api/rules/${encodeURIComponent(editing)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      if (oldCode && updated.code && updated.code !== oldCode) {
+        notify(`规则已保存，编码已从 ${oldCode} 改为 ${updated.code}；旧编码 ${oldCode} 已保留为别名，按它搜索或在命中里引用仍会落到这条规则`, 'ok');
+      } else {
+        notify('规则已保存', 'ok');
+      }
     } else {
       await request('/api/rules', { method: 'POST', body: JSON.stringify(payload) });
       notify('规则已新增', 'ok');
@@ -384,7 +435,11 @@ function renderScan(result) {
     .map((key) => `${key} ${result.summary.byLevel[key]} 条`)
     .join('　');
   const ruleText = result.summary.byRule
-    .map((item) => `${item.code} ${item.count} 条`)
+    .map((item) => {
+      const olds = Array.isArray(item.previousCodes) ? item.previousCodes : [];
+      const tail = olds.length ? `（曾用 ${olds.join('、')}）` : '';
+      return `${item.code}${tail} ${item.count} 条`;
+    })
     .join('　') || '没有规则命中';
   const fileText = result.summary.byFile
     .map((item) => `${item.path} ${item.count} 条`)
@@ -397,7 +452,7 @@ function renderScan(result) {
 
   const body = el('hit-body');
   body.innerHTML = result.hits.map((hit) => `<tr>
-      <td class="mono">${escapeHtml(hit.code)}</td>
+      <td class="mono code-cell">${renderCodeCell(hit.code, hit.previousCodes)}</td>
       <td><span class="tag ${levelClass(hit.level)}">${escapeHtml(hit.level)}</span></td>
       <td>${escapeHtml(hit.ruleName)}</td>
       <td class="mono">${escapeHtml(hit.path)}</td>

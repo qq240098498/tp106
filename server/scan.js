@@ -1,4 +1,4 @@
-const { load, LEVELS, STATUSES } = require('./store');
+const { load, LEVELS, STATUSES, previousCodesOf } = require('./store');
 const { ApiError, pickText } = require('./errors');
 
 // 一条规则管不管这个文件：适用文件类型写成全部的管所有文件，否则只认同类型的
@@ -55,6 +55,9 @@ function scan(options) {
           hits.push({
             ruleId: rule.id,
             code: rule.code,
+            // 这条规则沿革里的旧编码一并带上：
+            // 历史清单里引用的就是“当时那一版”的编码，页面据此同时显示新旧
+            previousCodes: previousCodesOf(rule),
             ruleName: rule.name,
             level: rule.level,
             pattern: rule.pattern,
@@ -79,11 +82,19 @@ function scan(options) {
   LEVELS.forEach((item) => { byLevel[item] = 0; });
   hits.forEach((hit) => { byLevel[hit.level] += 1; });
 
+  // 按规则汇总时用 ruleId 归组：编码改过后新旧编码仍是同一条规则，不能拆成两条
   const byRuleMap = new Map();
   hits.forEach((hit) => {
-    const key = hit.code;
+    const key = hit.ruleId;
     if (!byRuleMap.has(key)) {
-      byRuleMap.set(key, { code: hit.code, ruleName: hit.ruleName, level: hit.level, count: 0 });
+      byRuleMap.set(key, {
+        ruleId: hit.ruleId,
+        code: hit.code,
+        previousCodes: hit.previousCodes,
+        ruleName: hit.ruleName,
+        level: hit.level,
+        count: 0,
+      });
     }
     byRuleMap.get(key).count += 1;
   });

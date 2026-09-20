@@ -1,9 +1,28 @@
 const crypto = require('crypto');
-const { load, save, LEVELS, STATUSES, FILE_TYPES, MAX_CODE_LENGTH, MAX_RULE_NAME_LENGTH, MAX_PATTERN_LENGTH, MAX_NOTE_LENGTH } = require('./store');
+const {
+  load,
+  save,
+  LEVELS,
+  STATUSES,
+  FILE_TYPES,
+  MAX_CODE_LENGTH,
+  MAX_RULE_NAME_LENGTH,
+  MAX_PATTERN_LENGTH,
+  MAX_NOTE_LENGTH,
+  previousCodesOf,
+  claimedCodesOf,
+} = require('./store');
 const { ApiError, pickText } = require('./errors');
 
 // 规则编码固定成大写字母加分段的数字，方便在命中清单里引用
 const CODE_PATTERN = /^[A-Z]{2,6}-\d{2,4}$/;
+
+// 按编码找规则：当前编码与沿革里的旧编码都认，保证旧引用能落回同一条规则
+function findRuleByCode(data, code) {
+  const target = code.toLowerCase();
+  return data.rules.find((item) => item.code.toLowerCase() === target
+    || previousCodesOf(item).some((oldCode) => oldCode.toLowerCase() === target)) || null;
+}
 
 function validateCode(value, data, selfId) {
   const code = pickText(value);
@@ -14,8 +33,18 @@ function validateCode(value, data, selfId) {
   if (!CODE_PATTERN.test(code)) {
     throw new ApiError(400, 'CODE_INVALID', '规则编码要写成大写字母加短横线加数字，例如 CODE-001', 'code');
   }
-  const hit = data.rules.find((item) => item.id !== selfId && item.code.toLowerCase() === code.toLowerCase());
-  if (hit) throw new ApiError(409, 'CODE_DUPLICATED', `编码 ${hit.code} 已经被 ${hit.name} 用了`, 'code');
+  const target = code.toLowerCase();
+  // 同一个新编码不能被两条规则同时占用：先看是不是别人的当前编码
+  const currentOwner = data.rules.find((item) => item.id !== selfId && item.code.toLowerCase() === target);
+  if (currentOwner) {
+    throw new ApiError(409, 'CODE_DUPLICATED', `编码 ${currentOwner.code} 已经被 ${currentOwner.name} 用了`, 'code');
+  }
+  // 再看是不是别的规则沿革里保留下来的旧编码——旧编码也不能拿去做正文
+  const aliasOwner = data.rules.find((item) => item.id !== selfId
+    && Array.from(claimedCodesOf(item)).includes(target));
+  if (aliasOwner) {
+    throw new ApiError(409, 'CODE_ALIAS_OCCUPIED', `编码 ${code} 曾是规则 ${aliasOwner.code}（${aliasOwner.name}）的旧编码，不能再用作其他规则的编码`, 'code');
+  }
   return code;
 }
 
@@ -94,7 +123,9 @@ function listRules(options) {
   if (status) list = list.filter((item) => item.status === status);
   if (fileType) list = list.filter((item) => item.fileType === fileType || item.fileType === '全部');
   if (keyword) {
+    // 旧编码同样参与搜索：按曾经用过的编码也能找到现在这条规则
     list = list.filter((item) => item.code.toLowerCase().includes(keyword)
+      || previousCodesOf(item).some((oldCode) => oldCode.toLowerCase().includes(keyword))
       || item.name.toLowerCase().includes(keyword)
       || item.pattern.toLowerCase().includes(keyword));
   }
@@ -129,6 +160,7 @@ function createRule(payload) {
     fileType: validateFileType(input.fileType),
     pattern: validatePattern(input.pattern),
     note: validateNote(input.note),
+    codeHistory: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -143,7 +175,12 @@ function updateRule(id, payload) {
   const found = data.rules.find((item) => item.id === id);
   if (!found) throw new ApiError(404, 'RULE_NOT_FOUND', '这条规则不存在或已被删除', '');
 
-  found.code = input.code === undefined ? found.code : validateCode(input.code, data, found.id);
+  const nextCode = input.code === undefined ? found.code : validateCode(input.code, data, found.id);
+  // 编码改动：旧编码作为别名留在沿革里，页面与历史引用都还能按旧编码找回这条规则
+  if (nextCode.toLowerCase() !== found.code.toLowerCase()) {
+    found.codeHistory.push({ from: found.code, to: nextCode, at: new Date().toISOString() });
+  }
+  found.code = nextCode;
   found.name = input.name === undefined ? found.name : validateName(input.name);
   found.level = input.level === undefined ? found.level : validateLevel(input.level);
   found.status = input.status === undefined ? found.status : validateStatus(input.status);
@@ -170,4 +207,5 @@ module.exports = {
   createRule,
   updateRule,
   deleteRule,
+  findRuleByCode,
 };

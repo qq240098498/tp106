@@ -254,6 +254,60 @@ td.note-cell {
   color: var(--ink-soft);
 }
 
+/* 编码列要同时放下当前编码与曾用编码，放开省略号并允许换行 */
+td.code-cell {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.code-current {
+  font-weight: 600;
+}
+
+.code-old {
+  margin-top: 2px;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* 编辑表单里的编码沿革：几次改动、每次从什么改成什么、什么时候改的都列出来 */
+.code-history {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f9fafc;
+}
+
+.code-history-title {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.code-history-list {
+  margin: 6px 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12.5px;
+}
+
+.code-history-at {
+  margin-left: 10px;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+}
+
+.code-history-now {
+  font-size: 12.5px;
+}
+
+.code-history-now .mono {
+  font-weight: 600;
+}
+
 td.actions {
   white-space: nowrap;
 }
